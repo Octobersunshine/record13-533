@@ -7,7 +7,6 @@ use axum::{
     Router,
 };
 use tower_http::cors::{Any, CorsLayer};
-
 use state::AppState;
 
 #[tokio::main]
@@ -29,8 +28,21 @@ async fn main() {
         .route("/bookings", get(handlers::list_bookings).post(handlers::create_booking))
         .route("/bookings/:id", get(handlers::get_booking))
         .route("/bookings/:id/cancel", post(handlers::cancel_booking))
+        .route("/bookings/:id/pay", post(handlers::pay_booking))
         .layer(cors)
-        .with_state(app_state);
+        .with_state(app_state.clone());
+
+    let cleanup_state = app_state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let count = handlers::cancel_expired_bookings(&cleanup_state).await;
+            if count > 0 {
+                println!("Auto-cancelled {} expired bookings", count);
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await.unwrap();
     println!("Server running on http://127.0.0.1:3000");

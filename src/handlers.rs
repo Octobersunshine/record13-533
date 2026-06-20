@@ -280,6 +280,8 @@ pub async fn create_booking(
 
     let total_price = session.price * payload.player_count as f64;
     let session_id = session.id;
+    let now = Utc::now().naive_utc();
+    let payment_deadline = now + chrono::Duration::minutes(15);
 
     let booking = Booking {
         id: Uuid::new_v4(),
@@ -289,7 +291,9 @@ pub async fn create_booking(
         player_count: payload.player_count,
         total_price,
         status: BookingStatus::Confirmed,
-        created_at: Utc::now().naive_utc(),
+        payment_status: PaymentStatus::Pending,
+        payment_deadline,
+        created_at: now,
     };
 
     let mut bookings = state.bookings.lock().await;
@@ -357,4 +361,76 @@ pub async fn cancel_booking(
     let booking_clone = booking.clone();
 
     Ok(Json(booking_clone))
+}
+
+pub async fn pay_booking(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Booking>, (StatusCode, Json<ErrorResponse>)> {
+    let mut bookings = state.bookings.lock().await;
+    let booking = bookings.get_mut(&id)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse { error: "Booking not found".to_string() }),
+        ))?;
+
+    if booking.status == BookingStatus::Cancelled {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: "Booking has been cancelled".to_string() }),
+        ));
+    }
+
+    if booking.payment_status == PaymentStatus::Paid {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: "Booking already paid".to_string() }),
+        ));
+    }
+
+    let now = Utc::now().naive_utc();
+    if now > booking.payment_deadline {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: "Payment deadline has passed, please rebook".to_string() }),
+        ));
+    }
+
+    booking.payment_status = PaymentStatus::Paid;
+    Ok(Json(booking.clone()))
+}
+
+pub async fn cancel_expired_bookings(state: &AppState) -> u32 {
+    let mut cancelled_count = 0;
+    let now = Utc::now().naive_utc();
+
+    let mut sessions = state.sessions.lock().await;
+    let mut bookings = state.bookings.lock().await;
+
+    let expired_bookings: Vec<(Uuid, Uuid, u32)> = bookings
+        .iter()
+        .filter(|(_, b)| {
+            b.status == BookingStatus::Confirmed
+                && b.payment_status == PaymentStatus::Pending
+                && now > b.payment_deadline
+        })
+        .map(|(id, b)| (*id, b.session_id, b.player_count))
+        .collect();
+
+    for (booking_id, session_id, player_count) in expired_bookings {
+        if let Some(booking) = bookings.get_mut(&booking_id) {
+            booking.status = BookingStatus::Cancelled;
+        }
+
+        if let Some(session) = sessions.get_mut(&session_id) {
+            session.remaining_slots = std::cmp::min(
+                session.remaining_slots + player_count,
+                session.total_slots,
+            );
+        }
+
+        cancelled_count += 1;
+    }
+
+    cancelled_count
 }

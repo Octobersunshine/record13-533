@@ -69,6 +69,8 @@ pub struct Booking {
     pub player_count: u32,
     pub total_price: f64,
     pub status: BookingStatus,
+    pub payment_status: PaymentStatus,
+    pub payment_deadline: NaiveDateTime,
     pub created_at: NaiveDateTime,
 }
 
@@ -76,6 +78,12 @@ pub struct Booking {
 pub enum BookingStatus {
     Confirmed,
     Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum PaymentStatus {
+    Pending,
+    Paid,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
