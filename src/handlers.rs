@@ -278,11 +278,8 @@ pub async fn create_booking(
         ));
     }
 
-    session.remaining_slots -= payload.player_count;
     let total_price = session.price * payload.player_count as f64;
     let session_id = session.id;
-
-    drop(sessions);
 
     let booking = Booking {
         id: Uuid::new_v4(),
@@ -296,6 +293,7 @@ pub async fn create_booking(
     };
 
     let mut bookings = state.bookings.lock().await;
+    session.remaining_slots -= payload.player_count;
     bookings.insert(booking.id, booking.clone());
 
     Ok((StatusCode::CREATED, Json(booking)))
@@ -325,7 +323,9 @@ pub async fn cancel_booking(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Booking>, (StatusCode, Json<ErrorResponse>)> {
+    let mut sessions = state.sessions.lock().await;
     let mut bookings = state.bookings.lock().await;
+
     let booking = bookings.get_mut(&id)
         .ok_or((
             StatusCode::NOT_FOUND,
@@ -339,17 +339,22 @@ pub async fn cancel_booking(
         ));
     }
 
-    booking.status = BookingStatus::Cancelled;
     let player_count = booking.player_count;
     let session_id = booking.session_id;
+
+    let session = sessions.get_mut(&session_id)
+        .ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse { error: "Associated session not found".to_string() }),
+        ))?;
+
+    session.remaining_slots = std::cmp::min(
+        session.remaining_slots + player_count,
+        session.total_slots,
+    );
+
+    booking.status = BookingStatus::Cancelled;
     let booking_clone = booking.clone();
-
-    drop(bookings);
-
-    let mut sessions = state.sessions.lock().await;
-    if let Some(session) = sessions.get_mut(&session_id) {
-        session.remaining_slots += player_count;
-    }
 
     Ok(Json(booking_clone))
 }
